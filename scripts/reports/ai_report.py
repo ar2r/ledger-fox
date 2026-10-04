@@ -94,7 +94,7 @@ T_FOOD_ROW = """      <div class="food-row">
         <b>{value}<br><small>{share}</small></b>
       </div>"""
 
-T_BUCKET_ROW = """      <div class="food-row">
+T_GROUP_ROW = """      <div class="food-row">
         <span>{name}</span>
         <b>{value}</b>
       </div>"""
@@ -168,6 +168,10 @@ T_OTHER_ROW = """          <tr>
             <td class="num">{qty}</td>
             <td class="num">{total}</td>
             <td class="num">{share}</td>
+          </tr>"""
+
+T_BASKET_GROUP_ROW = """          <tr class="basket-group">
+            <td colspan="6">{group}</td>
           </tr>"""
 
 T_BASKET_ROW = """          <tr>
@@ -436,11 +440,11 @@ def collect(
     other_top = other_rows[: args.top]
     other_total = sum(total for _, _, total in other_rows)
 
-    # Корзина продуктов на неделю: отдельное окно, частота — по срокам
-    # годности, объём — с сезонной поправкой по месяцу конца периода.
+    # Корзина продуктов на неделю: отдельное окно, группировка — по
+    # продуктовым группам, объём — с сезонной поправкой по месяцу конца.
     basket: dict[str, list[base.BasketEntry]] = {}
     basket_weekly_total = 0.0
-    bucket_totals: dict[str, float] = {}
+    group_totals: dict[str, float] = {}
     basket_days = getattr(args, "basket_days", 180)
     basket_window = basket_days
     month = end.month
@@ -463,11 +467,11 @@ def collect(
         baskets = base.build_weekly_basket(
             basket_report, basket_window, args.top, month=month, private_categories=private
         )
-        for bucket, entries in (baskets.get(currency) or {}).items():
+        for group, entries in (baskets.get(currency) or {}).items():
             if entries:
-                basket[bucket] = entries
-                bucket_totals[bucket] = sum(entry.adjusted_sum for entry in entries)
-        basket_weekly_total = sum(bucket_totals.values())
+                basket[group] = entries
+                group_totals[group] = sum(entry.adjusted_sum for entry in entries)
+        basket_weekly_total = sum(group_totals.values())
 
     # Недельный ритм для части «Графики»: окно всегда покрывает все столбики.
     weeks_report = base.build_period_report(
@@ -504,7 +508,7 @@ def collect(
         "other_rest_total": sum(total for _, _, total in other_rows[args.top :]),
         "other_total": other_total,
         "basket": basket,
-        "bucket_totals": bucket_totals,
+        "group_totals": group_totals,
         "basket_days": basket_days,
         "basket_window": basket_window,
         "basket_weekly_total": basket_weekly_total,
@@ -640,10 +644,10 @@ def build_shopping_prompt(
     ]
 
     item_lines = []
-    for bucket in base.BUCKET_ORDER:
-        for entry in data["basket"].get(bucket, []):
+    for group in base.FOOD_GROUP_ORDER:
+        for entry in data["basket"].get(group, []):
             item_lines.append(
-                f"- {short_item(entry.name)} · {bucket} · брать {base.take_label(entry, currency)} "
+                f"- {short_item(entry.name)} · {group} · брать {base.take_label(entry, currency)} "
                 f"{base.cadence_label(entry.cadence_days)} · "
                 f"{base.money(entry.adjusted_sum, currency)}/нед · срок ~{entry.shelf_days} дн · "
                 f"сезон {base.seasonal_mark(entry.season_weight)}"
@@ -689,7 +693,7 @@ def build_shopping_prompt(
 
 
 def fallback_shopping_ai(data: dict, max_item_name_chars: int = _config.DEFAULT_MAX_ITEM_NAME_CHARS) -> dict:
-    """Детерминированный план закупки: группы по бакетам сроков годности."""
+    """Детерминированный план закупки: группы по продуктовым группам корзины."""
     currency = data["currency"]
 
     def short_item(name: str) -> str:
@@ -697,8 +701,8 @@ def fallback_shopping_ai(data: dict, max_item_name_chars: int = _config.DEFAULT_
 
     groups = []
     off_season = []
-    for bucket in base.BUCKET_ORDER:
-        entries = data["basket"].get(bucket, [])
+    for group in base.FOOD_GROUP_ORDER:
+        entries = data["basket"].get(group, [])
         if not entries:
             continue
 
@@ -713,7 +717,7 @@ def fallback_shopping_ai(data: dict, max_item_name_chars: int = _config.DEFAULT_
                 if entry.season_weight < 0.8:
                     off_season.append((entry, base.seasonal_mark(entry.season_weight)))
             items.append({"name": short_item(entry.name), "note": note})
-        groups.append({"title": bucket, "items": items})
+        groups.append({"title": group, "items": items})
 
     if off_season:
         groups.append({
@@ -733,7 +737,7 @@ def fallback_shopping_ai(data: dict, max_item_name_chars: int = _config.DEFAULT_
     lead = (
         f"Ориентир недели — {base.money(data['basket_weekly_total'], currency)} по регулярной корзине "
         f"за {data.get('basket_window', data.get('basket_days', 180))} дней; "
-        "частота закупок — по срокам годности, объём — с сезонной поправкой."
+        "группировка — по продуктовым группам, объём — с сезонной поправкой."
     )
     tips = [
         "Скоропортящееся (срок до 7 дней) берите небольшими партиями — ровно на неделю.",
@@ -1269,8 +1273,13 @@ def build_render(
     )
 
     basket_rows = []
-    for bucket in base.BUCKET_ORDER:
-        for entry in data["basket"].get(bucket, []):
+    for group in base.FOOD_GROUP_ORDER:
+        entries = data["basket"].get(group, [])
+        if not entries:
+            continue
+
+        basket_rows.append(T_BASKET_GROUP_ROW.format(group=group))
+        for entry in entries:
             basket_rows.append(
                 T_BASKET_ROW.format(
                     name=short_item(entry.name),
@@ -1281,24 +1290,27 @@ def build_render(
                     season=base.seasonal_mark(entry.season_weight),
                 )
             )
-    blocks["basket-row"] = "\n".join(basket_rows) or T_BASKET_ROW.format(
-        name="регулярных продуктовых покупок не найдено",
-        bucket="—",
-        qty="—",
-        total=base.money(0, currency),
-        shelf="—",
-        season="—",
+    blocks["basket-row"] = "\n".join(basket_rows) or (
+        T_BASKET_GROUP_ROW.format(group="регулярных продуктовых покупок не найдено")
+        + T_BASKET_ROW.format(
+            name="—",
+            bucket="—",
+            qty="—",
+            total=base.money(0, currency),
+            shelf="—",
+            season="—",
+        )
     )
 
-    # Часть «Закупка»: ориентир по бакетам и сезонные группы месяца
-    blocks["basket-bucket-row"] = "\n".join(
-        T_BUCKET_ROW.format(
-            name=bucket,
-            value=base.money(data["bucket_totals"].get(bucket, 0.0), currency),
+    # Часть «Закупка»: ориентир по продуктовым группам и сезонные группы месяца
+    blocks["basket-group-row"] = "\n".join(
+        T_GROUP_ROW.format(
+            name=group,
+            value=base.money(data["group_totals"].get(group, 0.0), currency),
         )
-        for bucket in base.BUCKET_ORDER
-        if bucket in data["bucket_totals"]
-    ) or T_BUCKET_ROW.format(name="регулярных покупок не найдено", value=base.money(0, currency))
+        for group in base.FOOD_GROUP_ORDER
+        if group in data["group_totals"]
+    ) or T_GROUP_ROW.format(name="регулярных покупок не найдено", value=base.money(0, currency))
 
     seasonal_rows = []
     for label, weight in data["seasonal_rows"]:

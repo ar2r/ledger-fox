@@ -778,6 +778,30 @@ SHELF_LIFE_OVERRIDES = (
 # Позиция регулярная, если куплена минимум столько раз за окно корзины.
 MIN_BASKET_PURCHASES = 3
 
+# Продуктовые группы корзины: категории сворачиваются в группы, понятные
+# для похода в магазин; категории вне групп попадают в «Прочее».
+FOOD_GROUP_BY_CATEGORY = {
+    "Овощи и фрукты": "Овощи и фрукты",
+    "Молочные продукты": "Молочное",
+    "Мясо и птица": "Мясо и рыба",
+    "Рыба и морепродукты": "Мясо и рыба",
+    "Хлеб и выпечка": "Хлебобулочное и бакалея",
+    "Бакалея": "Хлебобулочное и бакалея",
+}
+FOOD_GROUP_OTHER = "Прочее"
+FOOD_GROUP_ORDER = (
+    "Овощи и фрукты",
+    "Молочное",
+    "Мясо и рыба",
+    "Хлебобулочное и бакалея",
+    FOOD_GROUP_OTHER,
+)
+
+
+def food_group(category: str) -> str:
+    """Продуктовая группа корзины для категории товара."""
+    return FOOD_GROUP_BY_CATEGORY.get(category, FOOD_GROUP_OTHER)
+
 # Сезонные профили спроса: (название группы, маркеры подстроки в названии
 # товара, множители по месяцам январь..декабрь). 1.0 — сезон спрос не меняет;
 # меньше — зимой берут реже, больше — летом чаще. Маркеры применяются по
@@ -810,12 +834,6 @@ SEASONAL_PROFILES: tuple[tuple[str, tuple[str, ...], tuple[float, ...]], ...] = 
         (1.30, 1.10, 0.90, 0.85, 0.85, 0.85, 0.85, 0.85, 0.90, 1.00, 1.30, 1.60),
     ),
 )
-
-BUCKET_WEEKLY = "Каждую неделю"
-BUCKET_MONTHLY = "Раз в 2-4 недели"
-BUCKET_STOCK = "Запас впрок (месяц+)"
-BUCKET_ORDER = (BUCKET_WEEKLY, BUCKET_MONTHLY, BUCKET_STOCK)
-
 
 @dataclass
 class BasketEntry:
@@ -906,14 +924,6 @@ def shelf_life_days(name: str, category: str) -> int:
     return SHELF_LIFE_DAYS.get(category, 14)
 
 
-def shelf_life_bucket(days: int) -> str:
-    if days <= 7:
-        return BUCKET_WEEKLY
-    if days <= 90:
-        return BUCKET_MONTHLY
-    return BUCKET_STOCK
-
-
 # Точность количеств в чеках ФНС — 3 знака: до неё округляются разовые порции.
 PORTION_PRECISION = 3
 # Шаг упаковки меньше 0.05 не имеет смысла: это плавающий вес, а не фасовка.
@@ -977,15 +987,16 @@ def build_weekly_basket(
     month: int | None = None,
     private_categories: set[str] | None = None,
 ) -> dict[str, dict[str, list[BasketEntry]]]:
-    """Корзина регулярных продуктов на неделю: {валюта: {бакет: [записи]}}.
+    """Корзина регулярных продуктов на неделю: {валюта: {группа: [записи]}}.
 
     Учитываются только продуктовые категории, купленные MIN_BASKET_PURCHASES+
-    раз за окно; частота закупок определяется сроком годности. При заданном
-    месяце (1-12) записи получают сезонный множитель спроса, а weekly_qty и
-    weekly_sum остаются базовым средним за окно. Рекомендация «брать» —
-    за одну закупку, с округлением вверх до целой упаковки (шаг выводится
-    из разовых покупок, см. purchase_step). Позиции приватных категорий
-    в корзину не попадают (единообразно с остальным отчётом).
+    раз за окно; группировка — по продуктовым группам (см. food_group),
+    срок годности остаётся колонкой. При заданном месяце (1-12) записи
+    получают сезонный множитель спроса, а weekly_qty и weekly_sum остаются
+    базовым средним за окно. Рекомендация «брать» — за одну закупку,
+    с округлением вверх до целой упаковки (шаг выводится из разовых
+    покупок, см. purchase_step). Позиции приватных категорий в корзину
+    не попадают (единообразно с остальным отчётом).
     """
     weeks = max(window_days / 7.0, 1.0)
     baskets: dict[str, dict[str, list[BasketEntry]]] = {}
@@ -1014,11 +1025,11 @@ def build_weekly_basket(
             purchase_count=len(item.purchase_receipts),
             window_days=float(window_days),
         )
-        buckets = baskets.setdefault(currency, {})
-        buckets.setdefault(shelf_life_bucket(entry.shelf_days), []).append(entry)
+        groups = baskets.setdefault(currency, {})
+        groups.setdefault(food_group(category), []).append(entry)
 
-    for buckets in baskets.values():
-        for bucket, entries in buckets.items():
+    for groups in baskets.values():
+        for entries in groups.values():
             entries.sort(key=lambda entry: entry.weekly_sum, reverse=True)
             del entries[top:]
 
@@ -2015,11 +2026,11 @@ def run_report(
             print(
                 COLOR.muted(
                     f"Регулярные покупки {window_note} "
-                    f"({MIN_BASKET_PURCHASES}+ чеков на позицию); «Как часто» — "
-                    "фактический интервал между закупками, «Брать» — сколько взять "
-                    "за одну закупку с округлением вверх до целой упаковки "
-                    "(шаг — типовая разовая покупка по истории чеков), в скобках — "
-                    "примерная стоимость закупки по средней цене; "
+                    f"({MIN_BASKET_PURCHASES}+ чеков на позицию), сгруппированы по "
+                    "продуктовым группам; «Как часто» — фактический интервал между "
+                    "закупками, «Брать» — сколько взять за одну закупку с округлением "
+                    "вверх до целой упаковки (шаг — типовая разовая покупка по истории "
+                    "чеков), в скобках — примерная стоимость закупки по средней цене; "
                     "«~Сумма/нед» — средний расход."
                 )
             )
@@ -2033,12 +2044,12 @@ def run_report(
                         "Множитель корректирует количество и сумму позиции."
                     )
                 )
-            for bucket in BUCKET_ORDER:
-                entries = buckets.get(bucket)
+            for group in FOOD_GROUP_ORDER:
+                entries = buckets.get(group)
                 if not entries:
                     continue
 
-                print(f"Позиции ({len(entries)}) · {bucket}")
+                print(f"Позиции ({len(entries)}) · {group}")
                 print_table(
                     ("Продукт", "Как часто", "Брать", "~Сумма/нед", "Срок годности", "Сезон"),
                     (

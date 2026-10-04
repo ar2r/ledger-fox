@@ -780,11 +780,17 @@ class WeeklyBasketTests(unittest.TestCase):
         for name, (category, expected) in cases.items():
             self.assertEqual(base_module.shelf_life_days(name, category), expected, name)
 
-    def test_shelf_life_buckets(self):
-        self.assertEqual(base_module.shelf_life_bucket(7), base_module.BUCKET_WEEKLY)
-        self.assertEqual(base_module.shelf_life_bucket(8), base_module.BUCKET_MONTHLY)
-        self.assertEqual(base_module.shelf_life_bucket(90), base_module.BUCKET_MONTHLY)
-        self.assertEqual(base_module.shelf_life_bucket(91), base_module.BUCKET_STOCK)
+    def test_food_groups(self):
+        # Категории сворачиваются в продуктовые группы корзины.
+        self.assertEqual(base_module.food_group("Молочные продукты"), "Молочное")
+        self.assertEqual(base_module.food_group("Мясо и птица"), "Мясо и рыба")
+        self.assertEqual(base_module.food_group("Рыба и морепродукты"), "Мясо и рыба")
+        self.assertEqual(base_module.food_group("Хлеб и выпечка"), "Хлебобулочное и бакалея")
+        self.assertEqual(base_module.food_group("Бакалея"), "Хлебобулочное и бакалея")
+        self.assertEqual(base_module.food_group("Овощи и фрукты"), "Овощи и фрукты")
+        # Продуктовые категории вне групп — «Прочее», оно замыкает порядок.
+        self.assertEqual(base_module.food_group("Напитки"), base_module.FOOD_GROUP_OTHER)
+        self.assertEqual(base_module.FOOD_GROUP_ORDER[-1], base_module.FOOD_GROUP_OTHER)
 
     def test_purchase_step(self):
         # Штучные (и пачки «1 кг», «2 кг»): шаг — целая единица.
@@ -847,9 +853,10 @@ class WeeklyBasketTests(unittest.TestCase):
 
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertIn("Корзина продуктов на неделю (рубли)", proc.stdout)
-            self.assertIn("Каждую неделю", proc.stdout)
-            self.assertIn("Раз в 2-4 недели", proc.stdout)
-            self.assertIn("Запас впрок (месяц+)", proc.stdout)
+            # Группировка — по продуктовым группам, не по срокам годности.
+            self.assertIn("Позиции (2) · Молочное", proc.stdout)
+            self.assertIn("Позиции (1) · Хлебобулочное и бакалея", proc.stdout)
+            self.assertNotIn("Каждую неделю · Позиции", proc.stdout)
             self.assertIn("Молоко 3.2%", proc.stdout)
             self.assertIn("Крупа гречневая", proc.stdout)
             self.assertIn("Ориентир трат в неделю по корзине", proc.stdout)
@@ -887,7 +894,10 @@ class WeeklyBasketTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             content = (out / "lkdr-2026-09.html").read_text(encoding="utf-8")
             self.assertIn("Корзина продуктов на неделю", content)
-            self.assertIn("Каждую неделю", content)
+            # Группы корзины — заголовочные строки таблицы и ориентир по группам.
+            self.assertIn("Молочное", content)
+            self.assertIn("Хлебобулочное и бакалея", content)
+            self.assertIn('class="basket-group"', content)
             self.assertIn("Молоко 3.2%", content)
             self.assertIn("~7 дн.", content)
             self.assertIn("Брать", content)
@@ -1048,7 +1058,7 @@ class ShoppingReportTests(unittest.TestCase):
             "basket_days": 180,
             "basket_weekly_total": 950.0,
             "seasonal_rows": [("Мороженое", 0.35), ("Горячие напитки", 1.3)],
-            "basket": {base_module.BUCKET_WEEKLY: [entry]},
+            "basket": {"Молочное": [entry]},
         }
 
         prompt = ai_report_module.build_shopping_prompt(data)
@@ -1060,13 +1070,13 @@ class ShoppingReportTests(unittest.TestCase):
         self.assertIn("ТОЛЬКО товары из списка", prompt)
         self.assertIn("950.00", prompt)
 
-    def test_fallback_shopping_groups_follow_buckets(self):
+    def test_fallback_shopping_groups_follow_food_groups(self):
         data = {
             "currency": "RUB",
             "basket_days": 180,
             "basket_weekly_total": 500.0,
             "basket": {
-                base_module.BUCKET_WEEKLY: [
+                "Молочное": [
                     base_module.BasketEntry("Молоко 3.2%", "Молочные продукты", 2, 100, 7, 1.0)
                 ],
             },
@@ -1077,7 +1087,7 @@ class ShoppingReportTests(unittest.TestCase):
 
         self.assertIn("lead", fallback)
         self.assertIn("groups", fallback)
-        self.assertEqual(fallback["groups"][0]["title"], base_module.BUCKET_WEEKLY)
+        self.assertEqual(fallback["groups"][0]["title"], "Молочное")
         self.assertEqual(fallback["groups"][0]["items"][0]["name"], "Молоко 3.2%")
 
     def test_ai_agent_payload_feeds_shopping_plan(self):
