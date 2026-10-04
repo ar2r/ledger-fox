@@ -643,7 +643,8 @@ def build_shopping_prompt(
     for bucket in base.BUCKET_ORDER:
         for entry in data["basket"].get(bucket, []):
             item_lines.append(
-                f"- {short_item(entry.name)} · {bucket} · {base.format_qty(entry.adjusted_qty)}/нед · "
+                f"- {short_item(entry.name)} · {bucket} · брать {entry.plan_qty_label} "
+                f"{base.cadence_label(entry.cadence_days)} · "
                 f"{base.money(entry.adjusted_sum, currency)}/нед · срок ~{entry.shelf_days} дн · "
                 f"сезон {base.seasonal_mark(entry.season_weight)}"
             )
@@ -659,6 +660,8 @@ def build_shopping_prompt(
 
 Сезонность уже применена к количествам: сейчас {month_name}, множители в списке.
 Позиции со множителем меньше 1 берутся реже, больше 1 — чаще.
+Поле «брать» округлено вверх до целой упаковки (шаг — типовая разовая
+покупка из чеков): дробных упаковок в плане не предлагай.
 
 Ответь СТРОГО одним валидным JSON-объектом без markdown-разметки по схеме:
 {{
@@ -701,7 +704,10 @@ def fallback_shopping_ai(data: dict, max_item_name_chars: int = _config.DEFAULT_
 
         items = []
         for entry in entries[:5]:
-            note = f"~{base.format_qty(entry.adjusted_qty)}/нед ≈ {base.money(entry.adjusted_sum, currency)}, срок ~{entry.shelf_days} дн."
+            note = (
+                f"брать {entry.plan_qty_label} {base.cadence_label(entry.cadence_days)} ≈ "
+                f"{base.money(entry.adjusted_sum, currency)}/нед, срок ~{entry.shelf_days} дн."
+            )
             if abs(entry.season_weight - 1.0) > 1e-9:
                 note += f" Сезон {base.seasonal_mark(entry.season_weight)}."
                 if entry.season_weight < 0.8:
@@ -1044,9 +1050,10 @@ def build_render(
         ),
         "basket_title": "Корзина продуктов на неделю",
         "basket_footer": (
-            "Количество и сумма — средний расход в неделю за окно корзины с сезонной поправкой; "
-            "частота закупок — по типовому сроку годности: скоропортящееся каждую неделю, "
-            "длительного хранения — раз в 2-4 недели или запасом."
+            "«Как часто» — фактический интервал между закупками по чекам; «Брать» — сколько "
+            "взять за одну закупку, с сезонной поправкой и округлением вверх до целой упаковки "
+            "(шаг — типовая разовая покупка; «2×0.9» — две упаковки по 0.9). Сумма — средний "
+            "расход в неделю; группировка — по сроку годности."
         ),
         "shopping_ai_title": "План закупки",
         "shopping_ai_lead": shopping_ai.get("lead", ""),
@@ -1266,8 +1273,8 @@ def build_render(
             basket_rows.append(
                 T_BASKET_ROW.format(
                     name=short_item(entry.name),
-                    bucket=bucket,
-                    qty=base.format_qty(entry.adjusted_qty),
+                    bucket=base.cadence_label(entry.cadence_days),
+                    qty=entry.plan_qty_label,
                     total=base.money(entry.adjusted_sum, currency),
                     shelf=f"~{entry.shelf_days} дн.",
                     season=base.seasonal_mark(entry.season_weight),

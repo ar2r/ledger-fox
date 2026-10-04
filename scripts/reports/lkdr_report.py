@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import shlex
 import shutil
@@ -83,6 +84,9 @@ class ItemStats:
     total: float = 0
     purchase_receipts: set[str] = field(default_factory=set)
     refund_receipts: set[str] = field(default_factory=set)
+    # receipt_key → количество позиции в этом чеке (только покупки):
+    # из этих разовых порций выводится шаг целой упаковки для корзины.
+    purchase_portions: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -821,6 +825,10 @@ class BasketEntry:
     weekly_sum: float
     shelf_days: int
     season_weight: float = 1.0
+    # Шаг целой упаковки (см. purchase_step); None — плавающий вес.
+    step: float | None = None
+    purchase_count: int = 0
+    window_days: float = 0.0
 
     @property
     def adjusted_qty(self) -> float:
@@ -831,6 +839,30 @@ class BasketEntry:
     def adjusted_sum(self) -> float:
         """Недельная сумма с учётом сезонного множителя."""
         return self.weekly_sum * self.season_weight
+
+    @property
+    def cadence_days(self) -> float | None:
+        """Фактический интервал между закупками по истории окна."""
+        if self.purchase_count <= 0:
+            return None
+
+        return max(self.window_days / self.purchase_count, 1.0)
+
+    @property
+    def plan_qty(self) -> float:
+        """Сколько брать за одну закупку: типовая разовая покупка с сезонной
+        поправкой, округлённая вверх до целой упаковки (не бывает меньше
+        одной продаваемой единицы)."""
+        cadence = self.cadence_days or 7.0
+        return round_up_to_step(self.weekly_qty * cadence / 7.0 * self.season_weight, self.step)
+
+    @property
+    def plan_qty_label(self) -> str:
+        """«2» для штучных или «2×0.9» — сколько упаковок и какого размера."""
+        if self.step and abs(self.step - 1.0) > 1e-9:
+            return f"{round(self.plan_qty / self.step):d}×{format_qty(self.step)}"
+
+        return format_qty(self.plan_qty)
 
 
 def seasonal_weight(name: str, month: int) -> float:
@@ -874,6 +906,53 @@ def shelf_life_bucket(days: int) -> str:
     return BUCKET_STOCK
 
 
+# Точность количеств в чеках ФНС — 3 знака: до неё округляются разовые порции.
+PORTION_PRECISION = 3
+# Шаг упаковки меньше 0.05 не имеет смысла: это плавающий вес, а не фасовка.
+MIN_PACKAGE_STEP = 0.05
+
+
+def purchase_step(portions: Iterable[float]) -> float | None:
+    """Шаг целой упаковки по истории разовых покупок позиции.
+
+    Все порции целые — штучный товар (или пачки «1 кг», «5 кг»): шаг 1,
+    меньше целого не продадут. Иначе шаг — наибольший общий делитель порций
+    (0.9, 1.8, 2.7 → 0.9): кратные ему количества реально стоят на полке.
+    Делитель мельче MIN_PACKAGE_STEP не находится — весовой товар с
+    плавающим количеством, шага нет (None).
+    """
+    values = sorted({round(q, PORTION_PRECISION) for q in portions if q > 0})
+    if not values:
+        return None
+
+    if all(value == int(value) for value in values):
+        return 1.0
+
+    scale = 10**PORTION_PRECISION
+    step = math.gcd(*(round(value * scale) for value in values)) / scale
+    if step >= MIN_PACKAGE_STEP:
+        return step
+
+    return None
+
+
+def round_up_to_step(value: float, step: float | None) -> float:
+    """Округление вверх до покупаемого количества: целых упаковок при
+    известном шаге, до 0.1 — для весовых с плавающим количеством."""
+    if value <= 0:
+        return 0.0
+
+    if step and step > 0:
+        return math.ceil(value / step - 1e-9) * step
+
+    return math.ceil(value * 10 - 1e-9) / 10
+
+
+def cadence_label(days: float | None) -> str:
+    """«раз в ~7 дн.» по фактической частоте закупок; «—» без истории."""
+    return "—" if not days else f"раз в ~{round(days):d} дн."
+
+
 def build_weekly_basket(
     report: PeriodReport,
     window_days: int,
@@ -886,8 +965,10 @@ def build_weekly_basket(
     Учитываются только продуктовые категории, купленные MIN_BASKET_PURCHASES+
     раз за окно; частота закупок определяется сроком годности. При заданном
     месяце (1-12) записи получают сезонный множитель спроса, а weekly_qty и
-    weekly_sum остаются базовым средним за окно. Позиции приватных
-    категорий в корзину не попадают (единообразно с остальным отчётом).
+    weekly_sum остаются базовым средним за окно. Рекомендация «брать» —
+    за одну закупку, с округлением вверх до целой упаковки (шаг выводится
+    из разовых покупок, см. purchase_step). Позиции приватных категорий
+    в корзину не попадают (единообразно с остальным отчётом).
     """
     weeks = max(window_days / 7.0, 1.0)
     baskets: dict[str, dict[str, list[BasketEntry]]] = {}
@@ -912,6 +993,9 @@ def build_weekly_basket(
             weekly_sum=item.total / weeks,
             shelf_days=shelf_life_days(name, category),
             season_weight=seasonal_weight(name, month) if month is not None else 1.0,
+            step=purchase_step(item.purchase_portions.values()),
+            purchase_count=len(item.purchase_receipts),
+            window_days=float(window_days),
         )
         buckets = baskets.setdefault(currency, {})
         buckets.setdefault(shelf_life_bucket(entry.shelf_days), []).append(entry)
@@ -1329,6 +1413,10 @@ def build_period_report(
         item.total += sign * float(row["sum"] or 0)
         if sign > 0:
             item.purchase_receipts.add(row["receipt_key"])
+            receipt_key = row["receipt_key"]
+            item.purchase_portions[receipt_key] = (
+                item.purchase_portions.get(receipt_key, 0.0) + float(row["quantity"] or 0)
+            )
         else:
             item.refund_receipts.add(row["receipt_key"])
 
@@ -1910,8 +1998,11 @@ def run_report(
             print(
                 COLOR.muted(
                     f"Регулярные покупки {window_note} "
-                    f"({MIN_BASKET_PURCHASES}+ чеков на позицию); частота закупок — "
-                    "по типовому сроку годности, количество — средний расход в неделю."
+                    f"({MIN_BASKET_PURCHASES}+ чеков на позицию); «Как часто» — "
+                    "фактический интервал между закупками, «Брать» — сколько взять "
+                    "за одну закупку с округлением вверх до целой упаковки "
+                    "(шаг — типовая разовая покупка по истории чеков); "
+                    "«~Сумма/нед» — средний расход."
                 )
             )
             if seasonal_active:
@@ -1931,11 +2022,12 @@ def run_report(
 
                 print(f"Позиции ({len(entries)}) · {bucket}")
                 print_table(
-                    ("Продукт", "Кол-во/нед", "~Сумма/нед", "Срок годности", "Сезон"),
+                    ("Продукт", "Как часто", "Брать", "~Сумма/нед", "Срок годности", "Сезон"),
                     (
                         (
                             short_item(entry.name),
-                            format_qty(entry.adjusted_qty),
+                            cadence_label(entry.cadence_days),
+                            entry.plan_qty_label,
                             money(entry.adjusted_sum, currency),
                             f"~{entry.shelf_days} дн.",
                             seasonal_mark(entry.season_weight),

@@ -786,6 +786,53 @@ class WeeklyBasketTests(unittest.TestCase):
         self.assertEqual(base_module.shelf_life_bucket(90), base_module.BUCKET_MONTHLY)
         self.assertEqual(base_module.shelf_life_bucket(91), base_module.BUCKET_STOCK)
 
+    def test_purchase_step(self):
+        # Штучные (и пачки «1 кг», «2 кг»): шаг — целая единица.
+        self.assertEqual(base_module.purchase_step([1, 2, 5]), 1.0)
+        self.assertEqual(base_module.purchase_step([2, 2, 2]), 1.0)
+        # Фасованные: НОД разовых количеств.
+        self.assertAlmostEqual(base_module.purchase_step([0.9, 1.8, 2.7]), 0.9)
+        self.assertAlmostEqual(base_module.purchase_step([1.5, 1.5]), 1.5)
+        # Весовые с плавающим количеством и пустая история — шага нет.
+        self.assertIsNone(base_module.purchase_step([0.47, 1.234, 0.8]))
+        self.assertIsNone(base_module.purchase_step([]))
+
+    def test_round_up_to_step(self):
+        self.assertEqual(base_module.round_up_to_step(1.3, 1.0), 2.0)
+        # Точно кратное шагу не округляется ещё на одну упаковку вверх.
+        self.assertEqual(base_module.round_up_to_step(2.0, 1.0), 2.0)
+        self.assertAlmostEqual(base_module.round_up_to_step(1.3, 0.9), 1.8)
+        # Без шага (весовой товар) — до 0.1.
+        self.assertAlmostEqual(base_module.round_up_to_step(0.47, None), 0.5)
+        self.assertEqual(base_module.round_up_to_step(0.0, 1.0), 0.0)
+
+    def test_basket_entry_plan_qty_rounds_to_package(self):
+        entry = base_module.BasketEntry(
+            name="Молоко 0.9л",
+            category="Молочные продукты",
+            weekly_qty=1.3,
+            weekly_sum=130.0,
+            shelf_days=7,
+            step=0.9,
+            purchase_count=26,
+            window_days=180,
+        )
+        self.assertAlmostEqual(entry.cadence_days, 180 / 26)
+        # Разовая потребность ~1.29 упаковки → две упаковки по 0.9.
+        self.assertAlmostEqual(entry.plan_qty, 1.8)
+        self.assertEqual(entry.plan_qty_label, "2×0.9")
+        # Без истории упаковки — весовое округление до 0.1.
+        loose = base_module.BasketEntry(
+            name="Сыр российский",
+            category="Молочные продукты",
+            weekly_qty=0.47,
+            weekly_sum=470.0,
+            shelf_days=30,
+        )
+        self.assertIsNone(loose.cadence_days)
+        self.assertAlmostEqual(loose.plan_qty, 0.5)
+        self.assertEqual(loose.plan_qty_label, "0.5")
+
     def test_text_report_basket_section(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "lkdr.db"
@@ -802,6 +849,10 @@ class WeeklyBasketTests(unittest.TestCase):
             self.assertIn("Молоко 3.2%", proc.stdout)
             self.assertIn("Крупа гречневая", proc.stdout)
             self.assertIn("Ориентир трат в неделю по корзине", proc.stdout)
+            # Колонки плана закупки: фактическая частота и целые упаковки.
+            self.assertIn("Как часто", proc.stdout)
+            self.assertIn("Брать", proc.stdout)
+            self.assertIn("раз в ~", proc.stdout)
 
     def test_basket_days_window_filters_old_purchases(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -835,6 +886,8 @@ class WeeklyBasketTests(unittest.TestCase):
             self.assertIn("Каждую неделю", content)
             self.assertIn("Молоко 3.2%", content)
             self.assertIn("~7 дн.", content)
+            self.assertIn("Брать", content)
+            self.assertIn("раз в ~", content)
 
 
 def add_ice_cream_items(db: Path) -> None:
