@@ -820,11 +820,11 @@ class WeeklyBasketTests(unittest.TestCase):
             weekly_sum=130.0,
             shelf_days=7,
             step=0.9,
-            purchase_count=26,
-            window_days=180,
+            event_qty=1.3,
+            cadence_days=7.0,
         )
-        self.assertAlmostEqual(entry.cadence_days, 180 / 26)
-        # Разовая потребность ~1.29 упаковки → две упаковки по 0.9.
+        self.assertAlmostEqual(entry.cadence_days, 7.0)
+        # Разовая покупка 1.3 → две упаковки по 0.9.
         self.assertAlmostEqual(entry.plan_qty, 1.8)
         self.assertEqual(entry.plan_qty_label, "2×0.9")
         # Стоимость закупки — по средней цене из чеков (100 за единицу).
@@ -842,6 +842,33 @@ class WeeklyBasketTests(unittest.TestCase):
         self.assertAlmostEqual(loose.plan_qty, 0.5)
         self.assertEqual(loose.plan_qty_label, "0.5")
         self.assertAlmostEqual(loose.plan_sum, 500.0)
+
+    def test_basket_cadence_from_actual_purchase_dates(self):
+        report = base_module.PeriodReport(
+            start=datetime(2026, 1, 1),
+            end=datetime(2026, 6, 29),
+            stats_by_currency=defaultdict(base_module.MutableStats),
+            stores=defaultdict(base_module.MutableStats),
+            days_total=defaultdict(base_module.MutableStats),
+            refund_stores=defaultdict(base_module.MutableStats),
+            items=defaultdict(base_module.ItemStats),
+        )
+        # Товар начали покупать в середине окна: 6 чеков с июля по сентябрь.
+        milk = base_module.ItemStats(quantity=6, total=600.0)
+        milk.purchase_receipts.update({f"r{i}" for i in range(6)})
+        milk.first_purchase = datetime(2026, 7, 6)
+        milk.last_purchase = datetime(2026, 9, 8)
+        report.items[("RUB", "Молоко безлактозное")] = milk
+
+        baskets = base_module.build_weekly_basket(report, 180, top=10)
+        entry = next(
+            entry
+            for entries in baskets["RUB"].values()
+            for entry in entries
+        )
+        # Интервал — по фактическим промежуткам: 64 дня / 5, а не окно/чеки = 30.
+        self.assertAlmostEqual(entry.cadence_days, 64 / 5, places=3)
+        self.assertAlmostEqual(entry.event_qty, 1.0)
 
     def test_text_report_basket_section(self):
         with tempfile.TemporaryDirectory() as tmp:

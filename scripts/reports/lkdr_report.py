@@ -14,7 +14,7 @@ import sys
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import _config
@@ -90,6 +90,10 @@ class ItemStats:
     # receipt_key → количество позиции в этом чеке (только покупки):
     # из этих разовых порций выводится шаг целой упаковки для корзины.
     purchase_portions: dict[str, float] = field(default_factory=dict)
+    # Границы дат покупок: интервал закупок считается по ним, а не по окну
+    # корзины — товар могли начать покупать и в середине окна.
+    first_purchase: datetime | None = None
+    last_purchase: datetime | None = None
 
 
 @dataclass
@@ -504,6 +508,17 @@ def parse_datetime(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
+def purchase_moment(value: str) -> datetime:
+    """Момент покупки для интервалов закупок: offset-aware строки ФНС
+    приводятся к naive-UTC, naive остаются как есть — точность до дней,
+    смешивать aware и naive в сравнениях нельзя."""
+    when = parse_datetime(value)
+    if when.tzinfo is not None:
+        return when.astimezone(timezone.utc).replace(tzinfo=None)
+
+    return when
+
+
 def money(value: float | int | None, currency: str) -> str:
     # +0.0 нормализует -0.0: без этого печатались «-0.00 ₽».
     value = float(value or 0) + 0.0
@@ -848,8 +863,11 @@ class BasketEntry:
     season_weight: float = 1.0
     # Шаг целой упаковки (см. purchase_step); None — плавающий вес.
     step: float | None = None
-    purchase_count: int = 0
-    window_days: float = 0.0
+    # Среднее количество за одну закупку: всего / число покупочных чеков.
+    event_qty: float = 0.0
+    # Фактический интервал между закупками: (последняя − первая покупка) /
+    # (чеки − 1) по датам чеков; None — дат нет.
+    cadence_days: float | None = None
 
     @property
     def adjusted_qty(self) -> float:
@@ -862,20 +880,13 @@ class BasketEntry:
         return self.weekly_sum * self.season_weight
 
     @property
-    def cadence_days(self) -> float | None:
-        """Фактический интервал между закупками по истории окна."""
-        if self.purchase_count <= 0:
-            return None
-
-        return max(self.window_days / self.purchase_count, 1.0)
-
-    @property
     def plan_qty(self) -> float:
         """Сколько брать за одну закупку: типовая разовая покупка с сезонной
         поправкой, округлённая вверх до целой упаковки (не бывает меньше
-        одной продаваемой единицы)."""
-        cadence = self.cadence_days or 7.0
-        return round_up_to_step(self.weekly_qty * cadence / 7.0 * self.season_weight, self.step)
+        одной продаваемой единицы). Без истории закупок разовое количество
+        считается недельным средним."""
+        per_event = self.event_qty if self.event_qty > 0 else self.weekly_qty
+        return round_up_to_step(per_event * self.season_weight, self.step)
 
     @property
     def plan_qty_label(self) -> str:
@@ -1017,6 +1028,14 @@ def build_weekly_basket(
         if len(item.purchase_receipts) < MIN_BASKET_PURCHASES:
             continue
 
+        purchase_count = len(item.purchase_receipts)
+        cadence = None
+        if purchase_count > 1 and item.first_purchase and item.last_purchase:
+            span = (item.last_purchase - item.first_purchase).total_seconds() / 86400.0
+            cadence = max(span / (purchase_count - 1), 1.0)
+        elif purchase_count:
+            cadence = max(window_days / purchase_count, 1.0)
+
         entry = BasketEntry(
             name=name,
             category=category,
@@ -1025,8 +1044,8 @@ def build_weekly_basket(
             shelf_days=shelf_life_days(name, category),
             season_weight=seasonal_weight(name, month) if month is not None else 1.0,
             step=purchase_step(item.purchase_portions.values()),
-            purchase_count=len(item.purchase_receipts),
-            window_days=float(window_days),
+            event_qty=item.quantity / purchase_count if purchase_count else 0.0,
+            cadence_days=cadence,
         )
         groups = baskets.setdefault(currency, {})
         groups.setdefault(food_group(category), []).append(entry)
@@ -1417,6 +1436,7 @@ def build_period_report(
         """
         select
             fd.receipt_key,
+            fd.date_time,
             fd.operation_type,
             fd.total_sum,
             fd.prepaid_sum,
@@ -1448,6 +1468,11 @@ def build_period_report(
             item.purchase_portions[receipt_key] = (
                 item.purchase_portions.get(receipt_key, 0.0) + float(row["quantity"] or 0)
             )
+            when = purchase_moment(row["date_time"])
+            if item.first_purchase is None or when < item.first_purchase:
+                item.first_purchase = when
+            if item.last_purchase is None or when > item.last_purchase:
+                item.last_purchase = when
         else:
             item.refund_receipts.add(row["receipt_key"])
 
