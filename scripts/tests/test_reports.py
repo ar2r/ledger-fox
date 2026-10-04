@@ -821,6 +821,9 @@ class WeeklyBasketTests(unittest.TestCase):
         # Разовая потребность ~1.29 упаковки → две упаковки по 0.9.
         self.assertAlmostEqual(entry.plan_qty, 1.8)
         self.assertEqual(entry.plan_qty_label, "2×0.9")
+        # Стоимость закупки — по средней цене из чеков (100 за единицу).
+        self.assertAlmostEqual(entry.plan_sum, 180.0)
+        self.assertEqual(base_module.take_label(entry, "RUB"), "2×0.9 (~180 ₽)")
         # Без истории упаковки — весовое округление до 0.1.
         loose = base_module.BasketEntry(
             name="Сыр российский",
@@ -832,6 +835,7 @@ class WeeklyBasketTests(unittest.TestCase):
         self.assertIsNone(loose.cadence_days)
         self.assertAlmostEqual(loose.plan_qty, 0.5)
         self.assertEqual(loose.plan_qty_label, "0.5")
+        self.assertAlmostEqual(loose.plan_sum, 500.0)
 
     def test_text_report_basket_section(self):
         with tempfile.TemporaryDirectory() as tmp:

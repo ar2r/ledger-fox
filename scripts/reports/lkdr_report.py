@@ -864,6 +864,14 @@ class BasketEntry:
 
         return format_qty(self.plan_qty)
 
+    @property
+    def plan_sum(self) -> float:
+        """Примерная стоимость одной закупки по средней цене из чеков."""
+        if self.weekly_qty <= 0:
+            return 0.0
+
+        return self.plan_qty * self.weekly_sum / self.weekly_qty
+
 
 def seasonal_weight(name: str, month: int) -> float:
     """Сезонный множитель спроса товара в месяце 1-12; 1.0 — сезон нейтрален."""
@@ -951,6 +959,15 @@ def round_up_to_step(value: float, step: float | None) -> float:
 def cadence_label(days: float | None) -> str:
     """«раз в ~7 дн.» по фактической частоте закупок; «—» без истории."""
     return "—" if not days else f"раз в ~{round(days):d} дн."
+
+
+def take_label(entry: BasketEntry, currency: str) -> str:
+    """Сколько брать за одну закупку и сколько она стоит: «1 (~243 ₽)»,
+    «2×0.9 (~437 ₽)». Стоимость — ориентир по средней цене из чеков,
+    округлённый до целой валюты, чтобы не читалась как цена строки."""
+    symbol = CURRENCY_SYMBOLS.get(currency, currency)
+    cost = f"{round(entry.plan_sum):,}".replace(",", " ")
+    return f"{entry.plan_qty_label} (~{cost} {symbol})"
 
 
 def build_weekly_basket(
@@ -2001,7 +2018,8 @@ def run_report(
                     f"({MIN_BASKET_PURCHASES}+ чеков на позицию); «Как часто» — "
                     "фактический интервал между закупками, «Брать» — сколько взять "
                     "за одну закупку с округлением вверх до целой упаковки "
-                    "(шаг — типовая разовая покупка по истории чеков); "
+                    "(шаг — типовая разовая покупка по истории чеков), в скобках — "
+                    "примерная стоимость закупки по средней цене; "
                     "«~Сумма/нед» — средний расход."
                 )
             )
@@ -2027,7 +2045,7 @@ def run_report(
                         (
                             short_item(entry.name),
                             cadence_label(entry.cadence_days),
-                            entry.plan_qty_label,
+                            take_label(entry, currency),
                             money(entry.adjusted_sum, currency),
                             f"~{entry.shelf_days} дн.",
                             seasonal_mark(entry.season_weight),

@@ -643,7 +643,7 @@ def build_shopping_prompt(
     for bucket in base.BUCKET_ORDER:
         for entry in data["basket"].get(bucket, []):
             item_lines.append(
-                f"- {short_item(entry.name)} · {bucket} · брать {entry.plan_qty_label} "
+                f"- {short_item(entry.name)} · {bucket} · брать {base.take_label(entry, currency)} "
                 f"{base.cadence_label(entry.cadence_days)} · "
                 f"{base.money(entry.adjusted_sum, currency)}/нед · срок ~{entry.shelf_days} дн · "
                 f"сезон {base.seasonal_mark(entry.season_weight)}"
@@ -705,7 +705,7 @@ def fallback_shopping_ai(data: dict, max_item_name_chars: int = _config.DEFAULT_
         items = []
         for entry in entries[:5]:
             note = (
-                f"брать {entry.plan_qty_label} {base.cadence_label(entry.cadence_days)} ≈ "
+                f"брать {base.take_label(entry, currency)} {base.cadence_label(entry.cadence_days)} ≈ "
                 f"{base.money(entry.adjusted_sum, currency)}/нед, срок ~{entry.shelf_days} дн."
             )
             if abs(entry.season_weight - 1.0) > 1e-9:
@@ -1052,8 +1052,9 @@ def build_render(
         "basket_footer": (
             "«Как часто» — фактический интервал между закупками по чекам; «Брать» — сколько "
             "взять за одну закупку, с сезонной поправкой и округлением вверх до целой упаковки "
-            "(шаг — типовая разовая покупка; «2×0.9» — две упаковки по 0.9). Сумма — средний "
-            "расход в неделю; группировка — по сроку годности."
+            "(шаг — типовая разовая покупка; «2×0.9» — две упаковки по 0.9), в скобках — примерная "
+            "стоимость закупки по средней цене. Сумма — средний расход в неделю; группировка — "
+            "по сроку годности."
         ),
         "shopping_ai_title": "План закупки",
         "shopping_ai_lead": shopping_ai.get("lead", ""),
@@ -1274,7 +1275,7 @@ def build_render(
                 T_BASKET_ROW.format(
                     name=short_item(entry.name),
                     bucket=base.cadence_label(entry.cadence_days),
-                    qty=entry.plan_qty_label,
+                    qty=base.take_label(entry, currency),
                     total=base.money(entry.adjusted_sum, currency),
                     shelf=f"~{entry.shelf_days} дн.",
                     season=base.seasonal_mark(entry.season_weight),
