@@ -224,6 +224,12 @@ CATEGORY_RULES = (
         ),
     ),
     (
+        "Сладости и снеки",
+        # Снеки стоят раньше овощей: «Чипсы картофельные» иначе уходит
+        # в овощи по маркеру «картоф».
+        ("чипс", "снэк", "снек"),
+    ),
+    (
         "Овощи и фрукты",
         (
             "овощ",
@@ -309,9 +315,6 @@ CATEGORY_RULES = (
             "конфет",
             "вафл",
             "морожен",
-            "чипс",
-            "снэк",
-            "снек",
             "пирожн",
         ),
     ),
@@ -796,6 +799,13 @@ SHELF_LIFE_OVERRIDES = (
 # Позиция регулярная, если куплена минимум столько раз за окно корзины.
 MIN_BASKET_PURCHASES = 3
 
+# Позиция выбывает из корзины, если не покупалась дольше STALE_CYCLES своих
+# циклов закупки (и минимум STALE_MIN_DAYS дней): совет «брать раз в N дней»
+# от заброшенного товара неактуален и противоречит его среднему расходу
+# (сезонные овощи, купленные только весной, в осенней корзине не нужны).
+STALE_CYCLES = 3.0
+STALE_MIN_DAYS = 21.0
+
 # Продуктовые группы корзины: категории сворачиваются в группы, понятные
 # для похода в магазин; категории вне групп попадают в «Прочее».
 FOOD_GROUP_BY_CATEGORY = {
@@ -1000,6 +1010,7 @@ def build_weekly_basket(
     top: int = 15,
     month: int | None = None,
     private_categories: set[str] | None = None,
+    stale_out: list[str] | None = None,
 ) -> dict[str, dict[str, list[BasketEntry]]]:
     """Корзина регулярных продуктов на неделю: {валюта: {группа: [записи]}}.
 
@@ -1009,10 +1020,17 @@ def build_weekly_basket(
     получают сезонный множитель спроса, а weekly_qty и weekly_sum остаются
     базовым средним за окно. Рекомендация «брать» — за одну закупку,
     с округлением вверх до целой упаковки (шаг выводится из разовых
-    покупок, см. purchase_step). Позиции приватных категорий в корзину
-    не попадают (единообразно с остальным отчётом).
+    покупок, см. purchase_step). Позиции, не покупавшиеся дольше
+    STALE_CYCLES своих циклов, выбывают (их ритм неактуален); при
+    переданном stale_out их названия попадают туда. Позиции приватных
+    категорий в корзину не попадают (единообразно с остальным отчётом).
     """
     weeks = max(window_days / 7.0, 1.0)
+    end_moment = (
+        report.end.astimezone(timezone.utc).replace(tzinfo=None)
+        if report.end.tzinfo is not None
+        else report.end
+    )
     baskets: dict[str, dict[str, list[BasketEntry]]] = {}
     for (currency, name), item in report.items.items():
         if item.total <= 0 or is_service_item(name):
@@ -1036,6 +1054,13 @@ def build_weekly_basket(
         elif purchase_count:
             cadence = max(window_days / purchase_count, 1.0)
 
+        if item.last_purchase is not None and cadence is not None:
+            idle = (end_moment - item.last_purchase).total_seconds() / 86400.0
+            if idle > max(STALE_CYCLES * cadence, STALE_MIN_DAYS):
+                if stale_out is not None:
+                    stale_out.append(name)
+                continue
+
         entry = BasketEntry(
             name=name,
             category=category,
@@ -1052,7 +1077,9 @@ def build_weekly_basket(
 
     for groups in baskets.values():
         for entries in groups.values():
-            entries.sort(key=lambda entry: entry.weekly_sum, reverse=True)
+            # Сортировка по отображаемой сумме (с сезонной поправкой),
+            # чтобы порядок строк соответствовал колонке «~Сумма/нед».
+            entries.sort(key=lambda entry: entry.adjusted_sum, reverse=True)
             del entries[top:]
 
     return baskets
@@ -2031,8 +2058,14 @@ def run_report(
         basket_report = build_period_report(
             conn, end - timedelta(days=window_days), end, store_rules, receipt_rules, private
         )
+        stale_items: list[str] = []
         baskets = build_weekly_basket(
-            basket_report, window_days, top, month=end.month, private_categories=private
+            basket_report,
+            window_days,
+            top,
+            month=end.month,
+            private_categories=private,
+            stale_out=stale_items,
         )
         for currency, buckets in baskets.items():
             currency_label = CURRENCY_NAMES.get(currency, currency)
@@ -2098,6 +2131,15 @@ def run_report(
                 if not FORMAT_STATE["md"]:
                     print()
 
+            if stale_items:
+                listed = ", ".join(short_item(name) for name in stale_items[:6])
+                more = f" и ещё {len(stale_items) - 6}" if len(stale_items) > 6 else ""
+                print(
+                    COLOR.muted(
+                        f"Вне корзины — давно не покупались (свой ритм неактуален): "
+                        f"{listed}{more}."
+                    )
+                )
             print(f"Ориентир трат в неделю по корзине: {money(weekly_total, currency)}.")
             print()
 

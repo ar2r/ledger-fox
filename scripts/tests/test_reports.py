@@ -870,6 +870,75 @@ class WeeklyBasketTests(unittest.TestCase):
         self.assertAlmostEqual(entry.cadence_days, 64 / 5, places=3)
         self.assertAlmostEqual(entry.event_qty, 1.0)
 
+    def test_basket_drops_stale_items(self):
+        report = base_module.PeriodReport(
+            start=datetime(2026, 4, 1),
+            end=datetime(2026, 10, 3),
+            stats_by_currency=defaultdict(base_module.MutableStats),
+            stores=defaultdict(base_module.MutableStats),
+            days_total=defaultdict(base_module.MutableStats),
+            refund_stores=defaultdict(base_module.MutableStats),
+            items=defaultdict(base_module.ItemStats),
+        )
+        # Весенние огурцы: плотно покупались в апреле-мае, с мая не берутся.
+        cucumbers = base_module.ItemStats(quantity=21, total=1147.0)
+        cucumbers.purchase_receipts.update({f"c{i}" for i in range(7)})
+        cucumbers.first_purchase = datetime(2026, 4, 12)
+        cucumbers.last_purchase = datetime(2026, 5, 11)
+        report.items[("RUB", "Огурцы длинные")] = cucumbers
+        bananas = base_module.ItemStats(quantity=15, total=1759.0)
+        bananas.purchase_receipts.update({f"b{i}" for i in range(14)})
+        bananas.first_purchase = datetime(2026, 4, 12)
+        bananas.last_purchase = datetime(2026, 9, 29)
+        report.items[("RUB", "Бананы 1кг")] = bananas
+
+        stale: list[str] = []
+        baskets = base_module.build_weekly_basket(report, 180, top=10, stale_out=stale)
+
+        names = {
+            entry.name
+            for entries in baskets["RUB"].values()
+            for entry in entries
+        }
+        self.assertIn("Бананы 1кг", names)
+        self.assertNotIn("Огурцы длинные", names)
+        self.assertEqual(stale, ["Огурцы длинные"])
+
+    def test_basket_sorted_by_adjusted_sum(self):
+        report = base_module.PeriodReport(
+            start=datetime(2026, 1, 1),
+            end=datetime(2026, 6, 29),
+            stats_by_currency=defaultdict(base_module.MutableStats),
+            stores=defaultdict(base_module.MutableStats),
+            days_total=defaultdict(base_module.MutableStats),
+            refund_stores=defaultdict(base_module.MutableStats),
+            items=defaultdict(base_module.ItemStats),
+        )
+        # По базовому среднему бананы впереди, но сезон ×1.6 поднимает ягоды:
+        # порядок должен следовать отображаемой (сезонной) сумме.
+        bananas = base_module.ItemStats(quantity=30, total=1500.0)
+        bananas.purchase_receipts.update({f"b{i}" for i in range(10)})
+        report.items[("RUB", "Бананы 1кг")] = bananas
+        berries = base_module.ItemStats(quantity=10, total=1200.0)
+        berries.purchase_receipts.update({f"w{i}" for i in range(10)})
+        report.items[("RUB", "Ягоды свежие")] = berries
+
+        baskets = base_module.build_weekly_basket(report, 180, top=10, month=7)
+        entries = [
+            entry
+            for entries in baskets["RUB"].values()
+            for entry in entries
+        ]
+        self.assertEqual([entry.name for entry in entries[:2]], ["Ягоды свежие", "Бананы 1кг"])
+
+    def test_chips_categorize_as_snacks(self):
+        # «картоф» в составе не должен уводить чипсы в овощи.
+        self.assertEqual(
+            base_module.categorize_item("Чипсы картофельные Pringles Original"),
+            "Сладости и снеки",
+        )
+        self.assertEqual(base_module.categorize_item("Картофель мытый"), "Овощи и фрукты")
+
     def test_text_report_basket_section(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "lkdr.db"
