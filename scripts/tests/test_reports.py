@@ -857,6 +857,8 @@ class WeeklyBasketTests(unittest.TestCase):
             self.assertIn("Позиции (2) · Молочное", proc.stdout)
             self.assertIn("Позиции (1) · Хлебобулочное и бакалея", proc.stdout)
             self.assertNotIn("Каждую неделю · Позиции", proc.stdout)
+            # Таблицы групп разделены пустой строкой.
+            self.assertIn("\n\nПозиции (1) · Хлебобулочное и бакалея", proc.stdout)
             self.assertIn("Молоко 3.2%", proc.stdout)
             self.assertIn("Крупа гречневая", proc.stdout)
             self.assertIn("Ориентир трат в неделю по корзине", proc.stdout)

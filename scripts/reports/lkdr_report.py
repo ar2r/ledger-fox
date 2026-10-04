@@ -41,6 +41,9 @@ class Color:
     def header(self, value: object) -> str:
         return self.apply(value, "1;34")
 
+    def bold(self, value: object) -> str:
+        return self.apply(value, "1")
+
     def positive(self, value: object) -> str:
         return self.apply(value, "32")
 
@@ -573,7 +576,7 @@ def print_table(headers: tuple[str, ...], rows: Iterable[tuple[object, ...]]) ->
     for row in rows:
         widths = [max(width, visible_len(cell)) for width, cell in zip(widths, row)]
 
-    print(format_row(headers, widths))
+    print(COLOR.bold(format_row(headers, widths)))
     print(COLOR.muted(format_row(tuple("-" * width for width in widths), widths)))
     for row in rows:
         print(format_row(row, widths))
@@ -2049,7 +2052,10 @@ def run_report(
                 if not entries:
                     continue
 
-                print(f"Позиции ({len(entries)}) · {group}")
+                if FORMAT_STATE["md"]:
+                    print(f"**Позиции ({len(entries)}) · {group}**")
+                else:
+                    print(COLOR.header(f"Позиции ({len(entries)}) · {group}"))
                 print_table(
                     ("Продукт", "Как часто", "Брать", "~Сумма/нед", "Срок годности", "Сезон"),
                     (
@@ -2064,6 +2070,8 @@ def run_report(
                         for entry in entries
                     ),
                 )
+                if not FORMAT_STATE["md"]:
+                    print()
 
             print(f"Ориентир трат в неделю по корзине: {money(weekly_total, currency)}.")
             print()
