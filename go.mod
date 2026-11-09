@@ -8,7 +8,7 @@ require (
 	github.com/jfk9w-go/confi v0.0.7
 	github.com/jfk9w-go/lkdr-api v1.1.18
 	github.com/jfk9w-go/rucaptcha-api v1.0.10
-	github.com/mattn/go-sqlite3 v1.14.52
+	github.com/mattn/go-sqlite3 v1.14.53
 	github.com/pkg/errors v0.9.1
 	go.uber.org/multierr v1.11.0
 	gopkg.in/yaml.v3 v3.0.1
